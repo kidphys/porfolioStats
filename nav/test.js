@@ -18,41 +18,11 @@ describe('Data processing', function() {
         expect(prices[prices.length-1].tradeDate).to.equal('2016-03-03');
     });
 
-    it('matching simple list', function() {
-        var series1 = [{tradeDate: '1'}, {tradeDate: '2'}, {tradeDate: '3'}]
-        var series2 = [{tradeDate: '1'}, {tradeDate: '2'}, {tradeDate: '2'}]
-        var series = nav.mergeDate(series1, series2, function(item1, item2) {return {item1:item1, item2:item2}});
-        var only2 = series.filter(function(item) {
-            return item.item2
-        });
-        expect(only2.length).to.equal(series2.length);
-    });
-
-    it('match noti & price', function() {
-        var prices = nav.prettyDate(nav.parsePrice(data.price));
-        var noti = nav.prettyDate(nav.parseMatchedOrder(data.noti));
-        var series = nav.mergeDate(prices.reverse(), noti, function(price, noti) {
-            return {
-                 price: price,
-                 noti: noti
-            }
-        });
-        var mergedNoti = series.filter(function(item) {
-            return item.noti;
-        });
-        expect(mergedNoti.length).to.equal(noti.length);
-
-        series.map(function(item) {
-             if(item.noti) {
-                 expect(item.noti.tradeDate).to.equal(item.price.tradeDate);
-             }
-        });
-    });
 
     it('cash flow', function() {
         var prices = nav.prettyDate(nav.parsePrice(data.price)).reverse();
         prices = prices.slice(0, 50);
-        var noti = nav.prettyDate(nav.parseMatchedOrder(data.noti)).filter(function(item) {
+        var noti = nav.prettyDate(nav.onlyMatchedOrder(data.noti)).filter(function(item) {
             return item.symbol == 'GTN';
         });
         var series = nav.mergeDate(prices.reverse(), noti, function(price, noti) {
@@ -64,6 +34,21 @@ describe('Data processing', function() {
         series = nav.cashFlowFromStock(series.reverse());
     });
 
+    it('stock value flow', function() {
+        var trades = [
+            {side: 'BUY', quantity: 100, price: 10},
+            {side: 'SELL', quantity: 100, price: 20},
+            {side: 'BUY', quantity: 100, price: 10},
+        ];
+        var expectResult = [
+            {side: 'BUY', quantity: 100, price: 10, amount: 1000},
+            {side: 'SELL', quantity: 100, price: 20, amount: -2000},
+            {side: 'BUY', quantity: 100, price: 10, amount: 1000},
+        ]
+        var actual = nav.stockValueFlow(trades);
+        expect(actual).to.deep.equal(expectResult);
+    });
+
     it('merge change', function() {
         var arr = [
             {tradeDate: '2015-11-17', change: -3},
@@ -72,7 +57,7 @@ describe('Data processing', function() {
             {tradeDate: '2015-11-18', change: 2},
             {tradeDate: '2015-11-19', change: 1},
         ]
-        var result = nav.mergeChange(arr, function(item){return item.change});
+        var result = nav.mergeChange(arr, item => item.change);
         expect(result).to.deep.equal([
             {tradeDate: '2015-11-17', value: -5},
             {tradeDate: '2015-11-18', value: 4},
@@ -86,12 +71,79 @@ describe('Data processing', function() {
             {tradeDate: '2015-11-18', change: 2},
             {tradeDate: '2015-11-19', change: 1},
         ]
-        var result = nav.aggregateChange(arr, 5, function(item){return item.change});
+        var result = nav.aggregateChange(arr, 5, item => item.change);
         expect(result).to.deep.equal([
             {tradeDate: '2015-11-17', value: 2},
             {tradeDate: '2015-11-18', value: 4},
             {tradeDate: '2015-11-19', value: 5},
         ]);
+    });
+
+    it('group trade in to matching date', function() {
+        var prices = [
+            {tradeDate: '2015-11-17', price: 18},
+            {tradeDate: '2015-11-18', price: 19},
+            {tradeDate: '2015-11-19', price: 20},
+            {tradeDate: '2015-11-20', price: 15},
+            {tradeDate: '2015-11-21', price: 16},
+        ]
+        var trades = [
+            {tradeDate: '2015-11-17', side: 'BUY', price: 18, quantity: 100}, 
+            {tradeDate: '2015-11-17', side: 'SELL', price: 18, quantity: 100}, 
+            {tradeDate: '2015-11-17', side: 'BUY', price: 18, quantity: 100}, 
+            {tradeDate: '2015-11-20', side: 'BUY', price: 18, quantity: 100}, 
+            {tradeDate: '2015-11-21', side: 'BUY', price: 18, quantity: 100}, 
+        ]
+        var result = nav.mergeDate(prices, trades);
+        for(var i = 0; i < result.length; i++) {
+            if(result[i].tradeDate == '2015-11-17') {
+                expect(result[i].match).to.deep.equal([
+                    {tradeDate: '2015-11-17', side: 'BUY', price: 18, quantity: 100}, 
+                    {tradeDate: '2015-11-17', side: 'SELL', price: 18, quantity: 100}, 
+                    {tradeDate: '2015-11-17', side: 'BUY', price: 18, quantity: 100}, 
+                ]);
+            }
+        }
+    });
+
+    it('from trade activity to cash flow', function() {
+        var input = [
+            {
+                match: [
+                    {side: 'BUY', price: 10, quantity: 100}, 
+                    {side: 'SELL', price: 10, quantity: 100}, 
+                    {side: 'BUY', price: 10, quantity: 100}, 
+                ]
+            },
+            {
+                match: [
+                    {side: 'BUY', price: 20, quantity: 100}, 
+                    {side: 'SELL', price: 20, quantity: 100}, 
+                    {side: 'BUY', price: 20, quantity: 100}, 
+                ]
+            }
+        ];
+        var output = input.map(item => {
+            return {tradeAmount: nav.tradeValue(item.match)};
+        });
+
+        var expectResult = [
+                {tradeAmount: 1000},
+                {tradeAmount: 2000},
+            ];
+        expect(output).to.deep.equal(expectResult);
+    });
+
+
+    /**
+    Just to see if the real data can be processed without any surprise
+    */
+    it('sanity test match noti & price', function() {
+        var prices = nav.prettyDate(nav.parsePrice(data.price));
+        var noti = nav.prettyDate(nav.onlyMatchedOrder(data.noti));
+        var series = nav.mergeDate(prices.reverse(), noti);
+        series = nav.calcTradeValue(series);
+        expect(series.length).to.equal(prices.length);
     });
 
 });
